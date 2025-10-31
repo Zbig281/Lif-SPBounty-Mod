@@ -461,7 +461,7 @@ function ScriptObject::cbKill_LoadKillerName(%this, %rs)
 
       %kc = SPB_GetClientByCharId(%this.kid);
       if (isObject(%kc))
-         SPB_say(%kc, "\c2[Bounty] Brak wypłaty: ofiara i zabójca należą do tej samej gildii.");
+         SPB_say(%kc, "\c2[Bounty] No payout: the victim and the killer belong to the same guild.");
 
       %this.delete();
       return;
