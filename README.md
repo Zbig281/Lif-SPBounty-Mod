@@ -5,6 +5,16 @@ Lightweight bounty system using **copper**. Players can place bounties, see a li
 ## Install
 
 * Put files in:
+## Client Setup
+
+To enable the trade mod on the client side, make sure to add the following line in your **main.cs**
+
+```cpp
+exec("mods/SPBounty/cmod.cs");
+```
+## Server Requirements
+
+On the server side, make sure you have the LiFx Framework installed, specifically the art.zip file in the server's main directory
 
   * `mods/SPBounty/mod.cs` (server)
   * `mods/SPBounty/cmod.cs` + `mods/SPBounty/ui/bounty_bg.png` (client UI)
