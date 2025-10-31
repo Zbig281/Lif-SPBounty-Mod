@@ -1,4 +1,4 @@
-# SP::BountyMod (LiF:YO) — short README
+# SP::BountyMod (LiF:YO)
 
 Lightweight bounty system using **copper**. Players can place bounties, see a list, and claim payouts. Anti-abuse: **no payout if killer and victim are in the same guild** (bounty stays active).
 
