@@ -3,6 +3,7 @@ $SPB_UI::WinH = 520;
 $SPB_UI::PadX = 12;
 $SPB_UI::PadY = 64;
 $SPB_UI::Background = "mods/SPBounty/ui/bounty_bg.png";
+$SPB_UI_PayoutBusy = false;
 
 if (!isObject(SPB_HeaderProfile)) new GuiControlProfile(SPB_HeaderProfile)
 {
@@ -47,8 +48,12 @@ new GuiControl(SPB_Window)
   {
     profile = "GuiWindowProfile";
     text = "Bounty";
-    resizeWidth = "1"; resizeHeight = "1"; canMove = "1"; canClose = "1";
-    canMinimize = "0"; canMaximize = "0";
+    resizeWidth = "0"; 
+    resizeHeight = "0"; 
+    canMove = "1"; 
+    canClose = "1";
+    canMinimize = "0"; 
+    canMaximize = "0";
     closeCommand = "SPB_Close();";
 
     // Background FIRST (draws under everything else)
@@ -195,7 +200,14 @@ function SPB_UI_SendGive()
   commandToServer('SPB_Give', %f, %l, %a);
 }
 function SPB_RequestMy()     { commandToServer('SPB_My'); }
-function SPB_RequestPayout() { commandToServer('SPB_Payout'); }
+
+function SPB_RequestPayout()
+{
+  if ($SPB_UI_PayoutBusy) return;
+  $SPB_UI_PayoutBusy = true;
+  if (isObject(SPB_My_Claim)) SPB_My_Claim.setActive(0);
+  commandToServer('SPB_Payout');
+}
 
 function clientCmdSPB_List_Begin(){ if (isObject(SPB_ListTable)) SPB_ListTable.clear(); }
 function clientCmdSPB_List_Row(%first, %last, %amount)
@@ -217,9 +229,14 @@ function clientCmdSPB_Give_Result(%ok, %msg)
   if (%ok) SPB_RequestList();
 }
 function clientCmdSPB_My_Result(%total){ SPB_My_Value.setText("Your payout: " @ %total @ " c"); }
+
 function clientCmdSPB_Payout_Result(%ok, %val)
 {
+  $SPB_UI_PayoutBusy = false;
+  if (isObject(SPB_My_Claim)) SPB_My_Claim.setActive(1);
+
   if (%ok) SPB_My_Info.setText("\c3Claimed: " @ %val @ " c");
   else     SPB_My_Info.setText("\c2Error: " @ %val);
+
   SPB_RequestMy();
 }

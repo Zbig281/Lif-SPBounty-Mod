@@ -16,7 +16,7 @@ package SPBountyMod
       if (isFunction("LiFx::registerMod"))
       {
          LiFx::registerMod("SP::BountyMod", $SPBounty::Version, "server",
-            "SP::BountyMod — player bounty system (Copper only)", "Zbig Brodaty");
+            "SP::BountyMod — player bounty system", "Zbig Brodaty");
          SPB_log("Registered with LiFx as 'SP::BountyMod'.");
       }
       else
@@ -50,6 +50,15 @@ package SPBountyMod
 activatePackage(SPBountyMod);
 SPBountyMod::setup();
 SPB_log("SP::BountyMod " @ $SPBounty::Version @ " initialized");
+
+function SPB__unlockPayout(%kid){ $SPB_PayoutLock[%kid] = 0; }
+function SPB__lockPayout(%kid){
+  if ($SPB_PayoutLock[%kid]) return false;
+  $SPB_PayoutLock[%kid] = 1;
+  schedule(5000, 0, "SPB__unlockPayout", %kid);
+  return true;
+}
+
 
 function SPB_say(%client, %text)
 {
@@ -267,7 +276,12 @@ function SPB_Cmd_BountyGive(%client, %rest)
    %a = strlwr(%amt); %n = strlen(%a);
    if (%n < 2 || getSubStr(%a, %n-1, 1) !$= "c") { SPB_say(%client, "\c2Amount must be like Nc (e.g. 20c)."); return true; }
    %num = getSubStr(%a, 0, %n-1);
-   %ok = true; for (%i=0; %i<strlen(%num); %i++){ %ch=getSubStr(%num,%i,1); if (%ch<"0"||%ch>"9"){%ok=false;break;} }
+   %ok = true;
+   for (%i = 0; %i < strlen(%num); %i++)
+   {
+   %ch = getSubStr(%num, %i, 1);
+   if (strpos("0123456789", %ch) == -1) { %ok = false; break; }
+   } 
    if (!%ok) { SPB_say(%client, "\c2Amount must be numeric (e.g. 20c)."); return true; }
    %need = %num + 0; if (%need <= 0) { SPB_say(%client, "\c2Amount must be > 0."); return true; }
 
@@ -338,28 +352,53 @@ function SPB_Cmd_BountyTake(%client)
 {
    if (!SPB_EnsureTables()) { SPB_say(%client, "\c2Database is not ready yet."); return true; }
    %kid = %client.getCharacterId();
+   if (!SPB__lockPayout(%kid)) { SPB_say(%client, "\c2[Bounty] Payout is already in progress. Please wait..."); return true; }
+
    %q = "SELECT Amount FROM spb_payouts WHERE KillerCharID=" @ %kid @ " LIMIT 1";
    SPB_DB._take_client = %client;
+   SPB_DB._take_kid    = %kid;
    dbi.select(SPB_DB, "cbTake_Load", %q);
-   return true;
 }
+
 function SPB_DB::cbTake_Load(%this, %rs)
 {
-   %client = %this._take_client;
-   %amt=0;
-   if (%rs.ok() && %rs.nextRecord()) { %amt = %rs.getFieldValue("Amount")+0; }
+   %client = %this._take_client; %kid = %this._take_kid;
+   %amt=0; if (%rs.ok() && %rs.nextRecord()) %amt = %rs.getFieldValue("Amount")+0;
    if (isObject(%rs)) { dbi.remove(%rs); %rs.delete(); }
 
-   if (%amt <= 0) { SPB_say(%client, "\c2[Bounty] You have nothing to claim."); return; }
+   if (%amt <= 0) { SPB_say(%client, "\c2[Bounty] You have nothing to claim."); SPB__unlockPayout(%kid); return; }
 
-   %pl = 0; if (isObject(%client.player)) %pl = %client.player; if (!isObject(%pl)) %pl = %client.getControlObject();
-   if (!isObject(%pl)) { SPB_say(%client, "\c2Missing PlayerObject (cannot deliver payout)."); return; }
-
-   %pl.inventoryAddItem($SPBounty::CoinTypeID, %amt, 50, 0, 0);
-   %upd = "UPDATE spb_payouts SET Amount=0, last_claim_ts=CURRENT_TIMESTAMP WHERE KillerCharID=" @ %client.getCharacterId() @ " LIMIT 1";
+   %upd = "UPDATE spb_payouts SET Amount=0, last_claim_ts=CURRENT_TIMESTAMP "
+        @ "WHERE KillerCharID=" @ %kid @ " AND Amount=" @ %amt @ " LIMIT 1";
    dbi.update(%upd);
 
+   %q2 = "SELECT Amount FROM spb_payouts WHERE KillerCharID=" @ %kid @ " LIMIT 1";
+   %this._take_amt = %amt;
+   dbi.select(%this, "cbTake_AfterZero", %q2);
+}
+
+function SPB_DB::cbTake_AfterZero(%this, %rs)
+{
+   %client = %this._take_client; %kid = %this._take_kid;
+   %now=0; if (%rs.ok() && %rs.nextRecord()) %now = %rs.getFieldValue("Amount")+0;
+   if (isObject(%rs)) { dbi.remove(%rs); %rs.delete(); }
+
+   if (%now != 0) { SPB_say(%client, "\c2[Bounty] Payout changed. Try again."); SPB__unlockPayout(%kid); return; }
+
+   %amt = %this._take_amt + 0;
+   %pl = 0; if (isObject(%client.player)) %pl = %client.player; if (!isObject(%pl)) %pl = %client.getControlObject();
+   if (!isObject(%pl)) {
+
+      %restore = "UPDATE spb_payouts SET Amount=Amount+" @ %amt @ " WHERE KillerCharID=" @ %kid @ " LIMIT 1";
+      dbi.update(%restore);
+      SPB_say(%client, "\c2Missing PlayerObject (cannot deliver payout).");
+      SPB__unlockPayout(%kid);
+      return;
+   }
+
+   %pl.inventoryAddItem($SPBounty::CoinTypeID, %amt, 50, 0, 0);
    SPB_say(%client, "\c3[Bounty] Claimed: " @ %amt @ "c.");
+   SPB__unlockPayout(%kid);
 }
 
 function SP_BountyCB::onKill(%this, %CharID, %KillerID, %isKnockout, %Tombstone)
@@ -570,28 +609,53 @@ function serverCmdSPB_Payout(%client)
 {
   if (!SPB_EnsureTables()) { commandToClient(%client, 'SPB_Payout_Result', false, "DB not ready"); return; }
   %kid = %client.getCharacterId();
+  if (!SPB__lockPayout(%kid)) { commandToClient(%client, 'SPB_Payout_Result', false, "Payout already in progress"); return; }
+
   %q = "SELECT Amount FROM spb_payouts WHERE KillerCharID=" @ %kid @ " LIMIT 1";
-  %ctx = new ScriptObject(){ c=%client; };
+  %ctx = new ScriptObject(){ c=%client; kid=%kid; };
   dbi.select(%ctx, "SPB__cbUI_Payout_Load", %q);
 }
+
 function ScriptObject::SPB__cbUI_Payout_Load(%this, %rs)
 {
-  %client = %this.c; %amt=0;
+  %client = %this.c; %kid = %this.kid; %amt=0;
   if (%rs.ok() && %rs.nextRecord()) %amt = %rs.getFieldValue("Amount")+0;
   if (isObject(%rs)) { dbi.remove(%rs); %rs.delete(); }
 
-  if (%amt <= 0) { commandToClient(%client, 'SPB_Payout_Result', false, "Nothing to claim"); %this.delete(); return; }
+  if (%amt <= 0) { commandToClient(%client, 'SPB_Payout_Result', false, "Nothing to claim"); SPB__unlockPayout(%kid); %this.delete(); return; }
+
+  %upd = "UPDATE spb_payouts SET Amount=0, last_claim_ts=CURRENT_TIMESTAMP "
+       @ "WHERE KillerCharID=" @ %kid @ " AND Amount=" @ %amt @ " LIMIT 1";
+  dbi.update(%upd);
+
+  %q2 = "SELECT Amount FROM spb_payouts WHERE KillerCharID=" @ %kid @ " LIMIT 1";
+  %this._ui_amt = %amt;
+  dbi.select(%this, "SPB__cbUI_Payout_AfterZero", %q2);
+}
+
+function ScriptObject::SPB__cbUI_Payout_AfterZero(%this, %rs)
+{
+  %client = %this.c; %kid = %this.kid;
+  %now=0; if (%rs.ok() && %rs.nextRecord()) %now = %rs.getFieldValue("Amount")+0;
+  if (isObject(%rs)) { dbi.remove(%rs); %rs.delete(); }
+
+  if (%now != 0) { commandToClient(%client, 'SPB_Payout_Result', false, "Payout changed. Try again."); SPB__unlockPayout(%kid); %this.delete(); return; }
+
+  %amt = %this._ui_amt + 0;
 
   %pl = 0; if (isObject(%client.player)) %pl = %client.player; if (!isObject(%pl)) %pl = %client.getControlObject();
-  if (!isObject(%pl)) { commandToClient(%client, 'SPB_Payout_Result', false, "No player"); %this.delete(); return; }
+  if (!isObject(%pl)) {
+    %restore = "UPDATE spb_payouts SET Amount=Amount+" @ %amt @ " WHERE KillerCharID=" @ %kid @ " LIMIT 1";
+    dbi.update(%restore);
+    commandToClient(%client, 'SPB_Payout_Result', false, "No player");
+    SPB__unlockPayout(%kid);
+    %this.delete(); return;
+  }
 
   if ($SPBounty::CoinTypeID $= "") $SPBounty::CoinTypeID = 1059;
   %pl.inventoryAddItem($SPBounty::CoinTypeID, %amt, 50, 0, 0);
 
-  %upd = "INSERT INTO spb_payouts (KillerCharID, Amount) VALUES (" @ %client.getCharacterId() @ ", 0) "
-       @ "ON DUPLICATE KEY UPDATE Amount=0, last_claim_ts=CURRENT_TIMESTAMP";
-  dbi.update(%upd);
-
   commandToClient(%client, 'SPB_Payout_Result', true, %amt);
+  SPB__unlockPayout(%kid);
   %this.delete();
 }
